@@ -2,8 +2,13 @@
 import os
 import uuid
 
+import numpy as np
 from dotenv import load_dotenv
-from fastembed import SparseTextEmbedding, TextEmbedding
+from fastembed import (
+    LateInteractionTextEmbedding,
+    SparseTextEmbedding,
+    TextEmbedding,
+)
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Column,
@@ -22,6 +27,7 @@ FILE_PATH = "../data/raw/AAPL_10-K_1A_temp.md"
 
 dense_model = TextEmbedding(os.getenv("DENSE_MODEL"))
 sparse_model = SparseTextEmbedding(os.getenv("SPARSE_MODEL"))
+colbert_model = LateInteractionTextEmbedding(os.getenv("COLBERT_MODEL"))
 # %%
 engine = create_engine(os.getenv("DATABASE_URL"))
 
@@ -33,9 +39,12 @@ document_chunks = Table(
     Column("id", String, primary_key=True),
     Column("content", String, nullable=False),
     Column(
-        "dense_embedding", Vector(int(os.getenv("DENSE_DIMENSION"))), nullable=False
+        "dense_embedding",
+        Vector(int(os.getenv("DENSE_DIMENSION"))),
+        nullable=False,
     ),
     Column("sparse_embedding", JSONB, nullable=True),
+    Column("colbert_embedding", JSONB, nullable=True),
     Column("source", String, nullable=False),
 )
 
@@ -59,14 +68,19 @@ chunks = [m.strip() for m in paragraphs if len(m.strip()) > 50]
 
 # %%
 data = []
+
 for chunk in chunks:
     dense_embedding = next(iter(dense_model.passage_embed([chunk]))).tolist()
+
     sparse = next(iter(sparse_model.passage_embed([chunk])))
 
     sparse_embedding = {
         "indices": sparse.indices.tolist(),
         "values": sparse.values.tolist(),
     }
+
+    colbert_embedding = next(iter(colbert_model.passage_embed([chunk]))).tolist()
+
     id = str(uuid.uuid4())
 
     data.append(
@@ -75,6 +89,7 @@ for chunk in chunks:
             "content": chunk,
             "dense_embedding": dense_embedding,
             "sparse_embedding": sparse_embedding,
+            "colbert_embedding": colbert_embedding,
             "source": FILE_PATH,
         }
     )
@@ -84,7 +99,7 @@ with engine.begin() as connection:
         insert(document_chunks),
         data,
     )
-# %%
+
 # %%
 query_text = "what are the main financial risks?"
 
@@ -96,6 +111,8 @@ query_sparse = {
     "indices": query_sparse_raw.indices.tolist(),
     "values": query_sparse_raw.values.tolist(),
 }
+
+query_colbert = next(iter(colbert_model.query_embed(query_text)))
 
 # %%
 dense_distance = document_chunks.c.dense_embedding.cosine_distance(query_dense).label(
@@ -112,7 +129,7 @@ dense_query = (
 with engine.connect() as connection:
     dense_results = connection.execute(dense_query).mappings().all()
 
-
+# %%
 def sparse_dot_product(query_sparse, document_sparse):
     query_vector = dict(
         zip(
@@ -150,6 +167,7 @@ for row in rows:
             "id": row["id"],
             "content": row["content"],
             "source": row["source"],
+            "colbert_embedding": row["colbert_embedding"],
             "score": score,
         }
     )
@@ -179,6 +197,7 @@ def reciprocal_rank_fusion(
             "id": doc_id,
             "content": result["content"],
             "source": result["source"],
+            "colbert_embedding": result["colbert_embedding"],
         }
 
     for rank, result in enumerate(sparse_results, start=1):
@@ -190,6 +209,7 @@ def reciprocal_rank_fusion(
             "id": doc_id,
             "content": result["content"],
             "source": result["source"],
+            "colbert_embedding": result["colbert_embedding"],
         }
 
     ranked_results = sorted(
@@ -215,8 +235,50 @@ results = reciprocal_rank_fusion(
 
 results = results[:20]
 
+
+# %%
+def colbert_score(query_embedding, document_embedding):
+    similarity = query_embedding @ document_embedding.T
+
+    max_similarities = similarity.max(axis=1)
+
+    return max_similarities.sum()
+
+
+reranked_results = []
+
 for result in results:
+    document_colbert = np.array(
+        result["colbert_embedding"],
+        dtype=np.float32,
+    )
+
+    score = colbert_score(
+        query_colbert,
+        document_colbert,
+    )
+
+    reranked_results.append(
+        {
+            **result,
+            "colbert_score": float(score),
+        }
+    )
+
+reranked_results = sorted(
+    reranked_results,
+    key=lambda x: x["colbert_score"],
+    reverse=True,
+)
+
+# %%
+final_results = reranked_results[:3]
+
+for result in final_results:
+    print(f"ColBERT Score: {result['colbert_score']:.2f}")
     print(f"RRF Score: {result['score']:.6f}")
     print(f"Texto: {result['content'][:200]}...")
     print("-" * 80)
 
+
+# %%
