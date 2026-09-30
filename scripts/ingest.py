@@ -39,17 +39,6 @@ document_chunks = Table(
     Column("source", String, nullable=False),
 )
 
-# documents = Table(
-#     "documents",
-#     metadata,
-#     Column("id", Integer, primary_key=True),
-#     Column("player", String, nullable=False),
-#     Column("title", String, nullable=False),
-#     Column("source_url", String, nullable=False),
-#     Column("published_at", Date, nullable=False),
-#     Column("document_type", String, nullable=False),
-# )
-
 
 def setup_database():
     with engine.begin() as connection:
@@ -77,7 +66,7 @@ for chunk in chunks:
     sparse_embedding = {
         "indices": sparse.indices.tolist(),
         "values": sparse.values.tolist(),
-    }    
+    }
     id = str(uuid.uuid4())
 
     data.append(
@@ -96,3 +85,138 @@ with engine.begin() as connection:
         data,
     )
 # %%
+# %%
+query_text = "what are the main financial risks?"
+
+query_dense = next(iter(dense_model.query_embed([query_text]))).tolist()
+
+query_sparse_raw = next(iter(sparse_model.query_embed([query_text])))
+
+query_sparse = {
+    "indices": query_sparse_raw.indices.tolist(),
+    "values": query_sparse_raw.values.tolist(),
+}
+
+# %%
+dense_distance = document_chunks.c.dense_embedding.cosine_distance(query_dense).label(
+    "distance"
+)
+
+dense_query = (
+    document_chunks.select()
+    .add_columns(dense_distance)
+    .order_by(dense_distance)
+    .limit(10)
+)
+
+with engine.connect() as connection:
+    dense_results = connection.execute(dense_query).mappings().all()
+
+
+def sparse_dot_product(query_sparse, document_sparse):
+    query_vector = dict(
+        zip(
+            query_sparse["indices"],
+            query_sparse["values"],
+        )
+    )
+
+    document_vector = dict(
+        zip(
+            document_sparse["indices"],
+            document_sparse["values"],
+        )
+    )
+
+    return sum(
+        query_value * document_vector.get(index, 0)
+        for index, query_value in query_vector.items()
+    )
+
+
+with engine.connect() as connection:
+    rows = connection.execute(document_chunks.select()).mappings().all()
+
+sparse_results = []
+
+for row in rows:
+    score = sparse_dot_product(
+        query_sparse,
+        row["sparse_embedding"],
+    )
+
+    sparse_results.append(
+        {
+            "id": row["id"],
+            "content": row["content"],
+            "source": row["source"],
+            "score": score,
+        }
+    )
+
+sparse_results = sorted(
+    sparse_results,
+    key=lambda x: x["score"],
+    reverse=True,
+)[:10]
+
+
+# %%
+def reciprocal_rank_fusion(
+    dense_results,
+    sparse_results,
+    k=1,
+):
+    scores = {}
+    documents = {}
+
+    for rank, result in enumerate(dense_results, start=1):
+        doc_id = result["id"]
+
+        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
+
+        documents[doc_id] = {
+            "id": doc_id,
+            "content": result["content"],
+            "source": result["source"],
+        }
+
+    for rank, result in enumerate(sparse_results, start=1):
+        doc_id = result["id"]
+
+        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
+
+        documents[doc_id] = {
+            "id": doc_id,
+            "content": result["content"],
+            "source": result["source"],
+        }
+
+    ranked_results = sorted(
+        scores.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    return [
+        {
+            **documents[doc_id],
+            "score": score,
+        }
+        for doc_id, score in ranked_results
+    ]
+
+
+# %%
+results = reciprocal_rank_fusion(
+    dense_results,
+    sparse_results,
+)
+
+results = results[:20]
+
+for result in results:
+    print(f"RRF Score: {result['score']:.6f}")
+    print(f"Texto: {result['content'][:200]}...")
+    print("-" * 80)
+
