@@ -3,6 +3,7 @@ import os
 import uuid
 
 import numpy as np
+from chunker import SemanticChunker
 from dotenv import load_dotenv
 from fastembed import (
     LateInteractionTextEmbedding,
@@ -62,9 +63,12 @@ setup_database()
 with open(FILE_PATH, "r", encoding="UTF-8") as f:
     content = f.read()
 
-paragraphs = content.split("\n")
+# paragraphs = content.split("\n")
 
-chunks = [m.strip() for m in paragraphs if len(m.strip()) > 50]
+# chunks = [m.strip() for m in paragraphs if len(m.strip()) > 50]
+
+chunker = SemanticChunker()
+chunks = chunker.create_chunks(content)
 
 # %%
 data = []
@@ -274,8 +278,10 @@ reranked_results = sorted(
 # %%
 final_results = reranked_results[:3]
 
+max_score = max(result['colbert_score'] for result in final_results)
+
 for result in final_results:
-    print(f"ColBERT Score: {result['colbert_score']:.2f}")
+    print(f"ColBERT Score: {result['colbert_score']/max_score:.6f}")
     print(f"RRF Score: {result['score']:.6f}")
     print(f"Texto: {result['content'][:200]}...")
     print("-" * 80)
