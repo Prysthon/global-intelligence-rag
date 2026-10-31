@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12.6"
 dependencies = [
+    "edgartools>=5.62.1",
     "fastembed>=0.8.0",
     "hdbscan>=0.8.44",
     "pgvector>=0.5.0",
