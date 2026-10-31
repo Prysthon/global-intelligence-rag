@@ -1,6 +1,9 @@
 # %%
 import os
+import sys
 import uuid
+from datetime import date
+from pathlib import Path
 
 import numpy as np
 from chunker import SemanticChunker
@@ -13,6 +16,7 @@ from fastembed import (
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Column,
+    Date,
     MetaData,
     String,
     Table,
@@ -22,9 +26,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
+# Make the src package available when running this script directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from global_intelligence.ingestion.edgar_client import EdgarClient
+
 load_dotenv()
 
-FILE_PATH = "../data/raw/AAPL_10-K_1A_temp.md"
+TICKERS = ["AAPL"]
+FORM_TYPES = ["10-K", "10-Q"]
 
 dense_model = TextEmbedding(os.getenv("DENSE_MODEL"))
 sparse_model = SparseTextEmbedding(os.getenv("SPARSE_MODEL"))
@@ -46,6 +56,10 @@ document_chunks = Table(
     ),
     Column("sparse_embedding", JSONB, nullable=True),
     Column("colbert_embedding", JSONB, nullable=True),
+    Column("ticker", String, nullable=False),
+    Column("company_name", String, nullable=False),
+    Column("form_type", String, nullable=False),
+    Column("report_date", Date, nullable=False),
     Column("source", String, nullable=False),
 )
 
@@ -60,43 +74,50 @@ def setup_database():
 
 setup_database()
 # %%
-with open(FILE_PATH, "r", encoding="UTF-8") as f:
-    content = f.read()
-
-# paragraphs = content.split("\n")
-
-# chunks = [m.strip() for m in paragraphs if len(m.strip()) > 50]
-
+client = EdgarClient(os.getenv("EDGAR_IDENTITY"))
 chunker = SemanticChunker()
-chunks = chunker.create_chunks(content)
 
 # %%
 data = []
 
-for chunk in chunks:
-    dense_embedding = next(iter(dense_model.passage_embed([chunk]))).tolist()
+for ticker in TICKERS:
+    for form_type in FORM_TYPES:
+        filing_data = client.fetch_filing_data(ticker, form_type)
+        filing_metadata = filing_data["metadata"]
+        report_date = date.fromisoformat(filing_metadata["report_date"])
+        content = client.get_combined_text(filing_data)
+        chunks = chunker.create_chunks(content)
 
-    sparse = next(iter(sparse_model.passage_embed([chunk])))
+        for chunk in chunks:
+            dense_embedding = next(iter(dense_model.passage_embed([chunk]))).tolist()
 
-    sparse_embedding = {
-        "indices": sparse.indices.tolist(),
-        "values": sparse.values.tolist(),
-    }
+            sparse = next(iter(sparse_model.passage_embed([chunk])))
 
-    colbert_embedding = next(iter(colbert_model.passage_embed([chunk]))).tolist()
+            sparse_embedding = {
+                "indices": sparse.indices.tolist(),
+                "values": sparse.values.tolist(),
+            }
 
-    id = str(uuid.uuid4())
+            colbert_embedding = next(
+                iter(colbert_model.passage_embed([chunk]))
+            ).tolist()
 
-    data.append(
-        {
-            "id": id,
-            "content": chunk,
-            "dense_embedding": dense_embedding,
-            "sparse_embedding": sparse_embedding,
-            "colbert_embedding": colbert_embedding,
-            "source": FILE_PATH,
-        }
-    )
+            id = str(uuid.uuid4())
+
+            data.append(
+                {
+                    "id": id,
+                    "content": chunk,
+                    "dense_embedding": dense_embedding,
+                    "sparse_embedding": sparse_embedding,
+                    "colbert_embedding": colbert_embedding,
+                    "ticker": filing_metadata["ticker"],
+                    "company_name": filing_metadata["company_name"],
+                    "form_type": filing_metadata["form_type"],
+                    "report_date": report_date,
+                    "source": filing_metadata["source_url"],
+                }
+            )
 # %%
 with engine.begin() as connection:
     connection.execute(
@@ -170,6 +191,10 @@ for row in rows:
         {
             "id": row["id"],
             "content": row["content"],
+            "ticker": row["ticker"],
+            "company_name": row["company_name"],
+            "form_type": row["form_type"],
+            "report_date": row["report_date"],
             "source": row["source"],
             "colbert_embedding": row["colbert_embedding"],
             "score": score,
@@ -200,6 +225,10 @@ def reciprocal_rank_fusion(
         documents[doc_id] = {
             "id": doc_id,
             "content": result["content"],
+            "ticker": result["ticker"],
+            "company_name": result["company_name"],
+            "form_type": result["form_type"],
+            "report_date": result["report_date"],
             "source": result["source"],
             "colbert_embedding": result["colbert_embedding"],
         }
@@ -212,6 +241,10 @@ def reciprocal_rank_fusion(
         documents[doc_id] = {
             "id": doc_id,
             "content": result["content"],
+            "ticker": result["ticker"],
+            "company_name": result["company_name"],
+            "form_type": result["form_type"],
+            "report_date": result["report_date"],
             "source": result["source"],
             "colbert_embedding": result["colbert_embedding"],
         }
@@ -281,10 +314,11 @@ final_results = reranked_results[:3]
 max_score = max(result['colbert_score'] for result in final_results)
 
 for result in final_results:
+    print(f"Empresa: {result['company_name']} ({result['ticker']})")
+    print(f"Relatório: {result['form_type']}")
+    print(f"Fonte: {result['source']}")
     print(f"ColBERT Score: {result['colbert_score']/max_score:.6f}")
     print(f"RRF Score: {result['score']:.6f}")
     print(f"Texto: {result['content'][:200]}...")
     print("-" * 80)
-
-
 # %%
