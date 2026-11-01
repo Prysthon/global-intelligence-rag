@@ -1,129 +1,32 @@
 # %%
-import os
 import sys
-import uuid
-from datetime import date
 from pathlib import Path
 
 import numpy as np
-from chunker import SemanticChunker
-from dotenv import load_dotenv
-from fastembed import (
-    LateInteractionTextEmbedding,
-    SparseTextEmbedding,
-    TextEmbedding,
-)
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import (
-    Column,
-    Date,
-    MetaData,
-    String,
-    Table,
-    create_engine,
-    insert,
-    text,
-)
-from sqlalchemy.dialects.postgresql import JSONB
 
-# Make the src package available when running this script directly.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from global_intelligence.config import EDGAR_IDENTITY, FORM_TYPES, TICKERS
+from global_intelligence.database.connection import create_db_engine
+from global_intelligence.database.schema import document_chunks, setup_database
+from global_intelligence.embeddings.encoder import EmbeddingEncoder
+from global_intelligence.ingestion.chunker import SemanticChunker
 from global_intelligence.ingestion.edgar_client import EdgarClient
+from global_intelligence.ingestion.pipeline import ingest_filings
 
-load_dotenv()
-
-TICKERS = ["AAPL"]
-FORM_TYPES = ["10-K", "10-Q"]
-
-dense_model = TextEmbedding(os.getenv("DENSE_MODEL"))
-sparse_model = SparseTextEmbedding(os.getenv("SPARSE_MODEL"))
-colbert_model = LateInteractionTextEmbedding(os.getenv("COLBERT_MODEL"))
+encoder = EmbeddingEncoder()
+dense_model = encoder.dense_model
+sparse_model = encoder.sparse_model
+colbert_model = encoder.colbert_model
 # %%
-engine = create_engine(os.getenv("DATABASE_URL"))
-
-metadata = MetaData()
-
-document_chunks = Table(
-    "document_chunks",
-    metadata,
-    Column("id", String, primary_key=True),
-    Column("content", String, nullable=False),
-    Column(
-        "dense_embedding",
-        Vector(int(os.getenv("DENSE_DIMENSION"))),
-        nullable=False,
-    ),
-    Column("sparse_embedding", JSONB, nullable=True),
-    Column("colbert_embedding", JSONB, nullable=True),
-    Column("ticker", String, nullable=False),
-    Column("company_name", String, nullable=False),
-    Column("form_type", String, nullable=False),
-    Column("report_date", Date, nullable=False),
-    Column("source", String, nullable=False),
-)
-
-
-def setup_database():
-    with engine.begin() as connection:
-        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-
-    metadata.drop_all(engine)
-    metadata.create_all(engine)
-
-
-setup_database()
+engine = create_db_engine()
+setup_database(engine)
 # %%
-client = EdgarClient(os.getenv("EDGAR_IDENTITY"))
+client = EdgarClient(EDGAR_IDENTITY)
 chunker = SemanticChunker()
 
 # %%
-data = []
-
-for ticker in TICKERS:
-    for form_type in FORM_TYPES:
-        filing_data = client.fetch_filing_data(ticker, form_type)
-        filing_metadata = filing_data["metadata"]
-        report_date = date.fromisoformat(filing_metadata["report_date"])
-        content = client.get_combined_text(filing_data)
-        chunks = chunker.create_chunks(content)
-
-        for chunk in chunks:
-            dense_embedding = next(iter(dense_model.passage_embed([chunk]))).tolist()
-
-            sparse = next(iter(sparse_model.passage_embed([chunk])))
-
-            sparse_embedding = {
-                "indices": sparse.indices.tolist(),
-                "values": sparse.values.tolist(),
-            }
-
-            colbert_embedding = next(
-                iter(colbert_model.passage_embed([chunk]))
-            ).tolist()
-
-            id = str(uuid.uuid4())
-
-            data.append(
-                {
-                    "id": id,
-                    "content": chunk,
-                    "dense_embedding": dense_embedding,
-                    "sparse_embedding": sparse_embedding,
-                    "colbert_embedding": colbert_embedding,
-                    "ticker": filing_metadata["ticker"],
-                    "company_name": filing_metadata["company_name"],
-                    "form_type": filing_metadata["form_type"],
-                    "report_date": report_date,
-                    "source": filing_metadata["source_url"],
-                }
-            )
-# %%
-with engine.begin() as connection:
-    connection.execute(
-        insert(document_chunks),
-        data,
-    )
+data = ingest_filings(TICKERS, FORM_TYPES, client, chunker, encoder, engine)
 
 # %%
 query_text = "what are the main financial risks?"
@@ -311,13 +214,13 @@ reranked_results = sorted(
 # %%
 final_results = reranked_results[:3]
 
-max_score = max(result['colbert_score'] for result in final_results)
+max_score = max(result["colbert_score"] for result in final_results)
 
 for result in final_results:
     print(f"Empresa: {result['company_name']} ({result['ticker']})")
     print(f"Relatório: {result['form_type']}")
     print(f"Fonte: {result['source']}")
-    print(f"ColBERT Score: {result['colbert_score']/max_score:.6f}")
+    print(f"ColBERT Score: {result['colbert_score'] / max_score:.6f}")
     print(f"RRF Score: {result['score']:.6f}")
     print(f"Texto: {result['content'][:200]}...")
     print("-" * 80)

@@ -4,7 +4,7 @@ from edgar import Company, set_identity
 
 
 class EdgarClient:
-    FORM_ITEMS = {  # noqa: RUF012
+    FORM_ITEMS = {
         "10-K": ["Item 1", "Item 1A", "Item 7", "Item 8", "Item 9A"],
         "10-Q": [
             "Part I, Item 1",
