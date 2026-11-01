@@ -31,3 +31,16 @@ class EmbeddingEncoder:
             "sparse_embedding": sparse_embedding,
             "colbert_embedding": colbert_embedding,
         }
+
+    def embed_query(self, query: str):
+        dense = next(iter(self.dense_model.query_embed([query]))).tolist()
+
+        sparse_raw = next(iter(self.sparse_model.query_embed([query])))
+        sparse = {
+            "indices": sparse_raw.indices.tolist(),
+            "values": sparse_raw.values.tolist(),
+        }
+
+        colbert = next(iter(self.colbert_model.query_embed(query)))
+
+        return dense, sparse, colbert
