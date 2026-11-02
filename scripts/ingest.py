@@ -3,26 +3,34 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from global_intelligence.config import EDGAR_IDENTITY, FORM_TYPES, TICKERS
-from global_intelligence.database.connection import create_db_engine
-from global_intelligence.database.repository import count_chunks
-from global_intelligence.database.schema import setup_database
-from global_intelligence.embeddings.encoder import EmbeddingEncoder
+from global_intelligence.config import Settings
+from global_intelligence.database.connection import Database
+from global_intelligence.database.repository import ChunkRepository
+from global_intelligence.embeddings.service import EmbeddingService
 from global_intelligence.ingestion.chunker import SemanticChunker
 from global_intelligence.ingestion.edgar_client import EdgarClient
-from global_intelligence.ingestion.pipeline import ingest_filings
+from global_intelligence.ingestion.pipeline import IngestionPipeline
 
 
 def main():
-    encoder = EmbeddingEncoder()
-    engine = create_db_engine()
-    setup_database(engine)
-    client = EdgarClient(EDGAR_IDENTITY)
-    chunker = SemanticChunker()
+    settings = Settings()
+    embedding_service = EmbeddingService(
+        settings.dense_model, settings.sparse_model, settings.colbert_model
+    )
+    database = Database(
+        database_url=settings.database_url,
+        dense_dimension=settings.dense_dimension,
+        table_name=settings.table_name,
+    )
+    database.setup()
+    
+    repository = ChunkRepository(database.engine, database.table)
+    client = EdgarClient(settings.edgar_identity)
+    chunker = SemanticChunker(model_name=settings.dense_model)
+    pipeline = IngestionPipeline(client, chunker, embedding_service, repository)
 
-    data = ingest_filings(TICKERS, FORM_TYPES, client, chunker, encoder, engine)
-
-    inserted_count = count_chunks(engine, [chunk["id"] for chunk in data])
+    chunks = pipeline.run(settings.tickers, settings.form_types)
+    inserted_count = repository.count_chunks([chunk.id for chunk in chunks])
 
     print(f"Ingestão concluída: {inserted_count} chunks confirmados no banco.")
 

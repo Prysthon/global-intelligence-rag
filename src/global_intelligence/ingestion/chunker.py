@@ -5,21 +5,18 @@ import hdbscan
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
-from global_intelligence.config import DENSE_MODEL
-
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 class SemanticChunker:
     def __init__(
         self,
-        model_name: str = DENSE_MODEL,
+        model_name: str,
         min_cluster_size: int = 3,
         orphan_cluster_size: int = 2,
         max_tokens: int = 300,
     ):
         self.model = SentenceTransformer(model_name)
-        self.model.max_seq_length = 512
         self.min_cluster_size = min_cluster_size
         self.orphan_cluster_size = orphan_cluster_size
         self.max_tokens = max_tokens

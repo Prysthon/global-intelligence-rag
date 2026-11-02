@@ -1,17 +1,11 @@
-def _sparse_dot_product(query_sparse, document_sparse):
-    query_vector = dict(
-        zip(
-            query_sparse["indices"],
-            query_sparse["values"],
-        )
-    )
+from global_intelligence.models import DocumentChunk, SearchResult, SparseEmbedding
 
-    document_vector = dict(
-        zip(
-            document_sparse["indices"],
-            document_sparse["values"],
-        )
-    )
+
+def _sparse_dot_product(
+    query_sparse: SparseEmbedding, document_sparse: SparseEmbedding
+) -> float:
+    query_vector = dict(zip(query_sparse.indices, query_sparse.values))
+    document_vector = dict(zip(document_sparse.indices, document_sparse.values))
 
     return sum(
         query_value * document_vector.get(index, 0)
@@ -19,24 +13,21 @@ def _sparse_dot_product(query_sparse, document_sparse):
     )
 
 
-def rank_sparse(query_sparse, rows):
+def rank_sparse(
+    query_sparse: SparseEmbedding, chunks: list[DocumentChunk]
+) -> list[SearchResult]:
     sparse_results = []
 
-    for row in rows:
-        score = _sparse_dot_product(query_sparse, row["sparse_embedding"])
-
+    for chunk in chunks:
+        score = _sparse_dot_product(query_sparse, chunk.embeddings.sparse)
         sparse_results.append(
-            {
-                "id": row["id"],
-                "content": row["content"],
-                "ticker": row["ticker"],
-                "company_name": row["company_name"],
-                "form_type": row["form_type"],
-                "report_date": row["report_date"],
-                "source": row["source"],
-                "colbert_embedding": row["colbert_embedding"],
-                "score": score,
-            }
+            SearchResult(
+                id=chunk.id,
+                content=chunk.content,
+                metadata=chunk.metadata,
+                colbert_embedding=chunk.embeddings.colbert,
+                score=score,
+            )
         )
 
-    return sorted(sparse_results, key=lambda x: x["score"], reverse=True)[:10]
+    return sorted(sparse_results, key=lambda result: result.score, reverse=True)[:10]
