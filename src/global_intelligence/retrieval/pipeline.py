@@ -13,14 +13,14 @@ class RetrievalPipeline:
         self._embedding_service = embedding_service
         self._repository = repository
 
-    def search(self, query: str) -> SearchResponse:
+    def search(self, query: str, k: int = 3) -> SearchResponse:
         embeddings = self._embedding_service.embed_query(query)
         dense_results = self._repository.search_dense(embeddings.dense)
         chunks = self._repository.get_chunks()
         sparse_results = rank_sparse(embeddings.sparse, chunks)
 
         results = reciprocal_rank_fusion(dense_results, sparse_results)[:20]
-        final_results = rerank(embeddings.colbert, results)[:3]
+        final_results = rerank(embeddings.colbert, results)[:k]
         max_score = max((result.colbert_score for result in final_results), default=0.0)
 
         normalized_results = [
