@@ -1,6 +1,7 @@
 from global_intelligence.models.chunk import DocumentChunk
 from global_intelligence.models.embeddings import Embeddings, SparseEmbedding
 from global_intelligence.models.filing import FilingData, FilingMetadata
+from global_intelligence.models.rag import RagRequest, RagResponse, RagResult
 from global_intelligence.models.search import (
     SearchRequest,
     SearchResponse,
@@ -12,6 +13,9 @@ __all__ = [
     "Embeddings",
     "FilingData",
     "FilingMetadata",
+    "RagRequest",
+    "RagResponse",
+    "RagResult",
     "SearchRequest",
     "SearchResponse",
     "SearchResult",

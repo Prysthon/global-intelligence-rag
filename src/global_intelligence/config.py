@@ -33,3 +33,6 @@ class Settings(BaseSettings):
     dense_dimension: int = Field(description="Dimensão dos vetores densos armazenados.")
     sparse_model: str = Field(description="Nome do modelo de embeddings esparsos.")
     colbert_model: str = Field(description="Nome do modelo ColBERT usado no reranking.")
+
+    groq_api_key: str = Field(description="Chave de acesso à API da Groq.", repr=False)
+    groq_model: str = Field(description="Nome do modelo de linguagem hospedado na Groq.")
